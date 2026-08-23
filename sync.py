@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Garmin Connect -> Supabase 日次同期"""
 import os, sys, json, time, datetime as dt
 import requests
 from garminconnect import Garmin
@@ -8,6 +9,7 @@ PASSWORD = os.environ["GARMIN_PASSWORD"]
 SB_URL = os.environ["SUPABASE_URL"].rstrip("/")
 SB_KEY = os.environ["SUPABASE_SERVICE_KEY"]
 TOKEN_DIR = os.environ.get("GARMIN_TOKEN_DIR", "/tmp/.garminconnect")
+WALK_PACE = 540   # 9:00/km 以上は walk
 
 H = {"apikey": SB_KEY, "Authorization": f"Bearer {SB_KEY}",
      "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates"}
@@ -72,6 +74,7 @@ def main():
     loop_days = min(days, 45)
     dates = [today - dt.timedelta(days=i) for i in range(loop_days)]
 
+    # --- training status / VO2max ---
     ts_rows = []
     for d in dates:
         try:
@@ -92,6 +95,7 @@ def main():
             print(f"  ts {d}: {type(e).__name__}", file=sys.stderr)
     upsert("training_status", ts_rows, "measurement_date")
 
+    # --- body battery ---
     bb_rows = []
     for d in dates:
         try:
@@ -107,6 +111,7 @@ def main():
             print(f"  bb {d}: {type(e).__name__}", file=sys.stderr)
     upsert("body_battery", bb_rows, "measurement_date")
 
+    # --- body composition ---
     bm_rows = []
     try:
         bc = g.get_body_composition(start, today.isoformat()) or {}
@@ -128,6 +133,7 @@ def main():
         print(f"  body_comp: {type(e).__name__}: {e}", file=sys.stderr)
     upsert("body_measurements", bm_rows, "measurement_date")
 
+    # --- daily steps ---
     st_rows = []
     try:
         for e in (g.get_daily_steps(start, today.isoformat()) or []):
@@ -140,6 +146,7 @@ def main():
         print(f"  steps: {type(e).__name__}: {e}", file=sys.stderr)
     upsert("daily_steps", st_rows, "measurement_date")
 
+    # --- sleep ---
     sl_rows = []
     for d in dates:
         try:
@@ -158,36 +165,31 @@ def main():
             print(f"  sleep {d}: {type(e).__name__}", file=sys.stderr)
     upsert("sleep_metrics", sl_rows, "measurement_date")
 
+    # --- activities (run / walk を判別して登録) ---
     try:
         acts = g.get_activities_by_date(start, today.isoformat(), "running") or []
-        n = 0
+        nrun = 0; nwalk = 0
         for a in acts:
             gid = a.get("activityId")
             if not gid: continue
+            dist = a.get("distance"); dur = a.get("duration")
+            if not dist or not dur: continue
+            km = round(dist/1000.0, 2)
+            pace = round(dur/(dist/1000.0))
+            atype = "walk" if pace >= WALK_PACE else "run"
             cad = a.get("averageRunningCadenceInStepsPerMinute")
+            st = a.get("startTimeGMT")
             row = {
+                "garmin_activity_id": str(gid),
+                "activity_date": (st.replace(" ", "T") + "+00:00") if st else None,
+                "activity_type": atype,
+                "distance_km": km,
+                "duration_seconds": round(dur),
+                "avg_pace_sec_per_km": pace,
+                "avg_heart_rate": round(a["averageHR"]) if a.get("averageHR") else None,
+                "max_heart_rate": round(a["maxHR"]) if a.get("maxHR") else None,
+                "calories": round(a["calories"]) if a.get("calories") else None,
+                "elevation_gain_m": round(a["elevationGain"], 1) if a.get("elevationGain") else None,
+                "course_name": a.get("activityName"),
                 "avg_cadence": round(cad) if cad else None,
                 "avg_stride_m": round(a["avgStrideLength"]/100, 2) if a.get("avgStrideLength") else None,
-                "vertical_ratio": a.get("avgVerticalRatio"),
-                "vertical_oscillation_cm": round(a["avgVerticalOscillation"]/10, 1)
-                    if a.get("avgVerticalOscillation") else None,
-                "ground_contact_ms": round(a["avgGroundContactTime"]) if a.get("avgGroundContactTime") else None,
-                "gct_balance": a.get("avgGroundContactBalance"),
-                "avg_power_w": round(a["avgPower"]) if a.get("avgPower") else None,
-                "dynamics_source": "garmin-api-auto"}
-            row = {k: v for k, v in row.items() if v is not None}
-            if len(row) <= 1: continue
-            r = requests.patch(
-                f"{SB_URL}/rest/v1/running_activities?garmin_activity_id=eq.{gid}",
-                headers=H, data=json.dumps(row), timeout=30)
-            if r.status_code < 300:
-                n += 1
-        print(f"  running_activities: {len(acts)}件中 {n}件更新")
-    except Exception as e:
-        print(f"  activities: {type(e).__name__}: {e}", file=sys.stderr)
-
-    print("=== 完了 ===")
-
-
-if __name__ == "__main__":
-    main()
