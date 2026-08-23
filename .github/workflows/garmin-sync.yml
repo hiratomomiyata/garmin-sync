@@ -1,0 +1,31 @@
+name: Garmin Sync
+on:
+  schedule:
+    - cron: '10 20 * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: 'How many days back'
+        default: '3'
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install garminconnect requests
+      - name: Restore Garmin token
+        uses: actions/cache@v4
+        with:
+          path: /tmp/.garminconnect
+          key: garmin-token-${{ github.run_id }}
+          restore-keys: garmin-token-
+      - name: Sync
+        env:
+          GARMIN_EMAIL: ${{ secrets.GARMIN_EMAIL }}
+          GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: python sync.py ${{ github.event.inputs.days || '3' }}
