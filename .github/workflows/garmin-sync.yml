@@ -28,4 +28,4 @@ jobs:
           GARMIN_PASSWORD: ${{ secrets.GARMIN_PASSWORD }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: python sync.py ${{ github.event.inputs.days || '3' }}
+        run: python sync.py ${{ inputs.days || '3' }}
